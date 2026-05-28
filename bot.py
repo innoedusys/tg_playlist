@@ -94,20 +94,30 @@ COOKIES_FILE = Path(__file__).parent / "cookies.txt"   # optional Netscape cooki
 def _build_ydl_opts(dest_dir: str) -> dict:
     """
     Build yt-dlp options.
-    Bypasses YouTube bot-detection via:
-      1. cookies.txt  (if present next to bot.py)
-      2. android client  (works without cookies on most videos)
+    Format priority (no ffmpeg needed):
+      1. m4a (AAC)  — best compatibility
+      2. webm/opus  — fallback
+      3. any audio-only stream
+      4. worst video — last resort (some videos only have muxed streams)
+    Bypasses YouTube bot-detection via android + web clients, plus cookies if available.
     """
     opts = {
-        "format": "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio",
+        # Try audio-only streams first; fall back to any format if nothing else works
+        "format": (
+            "bestaudio[ext=m4a]"
+            "/bestaudio[ext=webm]"
+            "/bestaudio[ext=opus]"
+            "/bestaudio"           # any audio-only
+            "/worst"               # absolute last resort (muxed)
+        ),
         "outtmpl": os.path.join(dest_dir, "%(title)s.%(ext)s"),
         "quiet": True,
         "no_warnings": True,
         "noplaylist": True,
-        # Use Android client — bypasses sign-in prompt on most videos
         "extractor_args": {
             "youtube": {
-                "player_client": ["android", "web"],
+                # Try multiple clients — increases chance one works without cookies
+                "player_client": ["android", "web", "ios"],
             }
         },
     }
@@ -143,13 +153,15 @@ async def download_audio(url: str, dest_dir: str) -> dict:
 
     title = info.get("title", "audio")
 
-    # Find the downloaded file (any audio extension)
-    audio_files = [
-        f for f in Path(dest_dir).iterdir()
-        if f.suffix.lower() in (".m4a", ".webm", ".opus", ".ogg", ".mp3", ".aac")
-    ]
+    # Find the downloaded file — accept any format yt-dlp produced
+    all_files = [f for f in Path(dest_dir).iterdir() if f.is_file()]
+    # Prefer known audio formats, but fall back to anything downloaded
+    audio_exts = {".m4a", ".webm", ".opus", ".ogg", ".mp3", ".aac", ".mp4", ".3gp"}
+    audio_files = [f for f in all_files if f.suffix.lower() in audio_exts]
     if not audio_files:
-        raise ValueError("❌ Download failed — no audio file found.")
+        audio_files = all_files  # take whatever yt-dlp saved
+    if not audio_files:
+        raise ValueError("❌ Download failed — no file was produced.")
 
     audio_path = str(audio_files[0])
     ext = Path(audio_path).suffix.lstrip(".")
