@@ -296,11 +296,27 @@ def run_webhook():
     logger.info("Starting in WEBHOOK mode → %s", WEBHOOK_URL)
 
     ptb_app = build_application()
-    fastapi_app = FastAPI()
 
-    # Health-check endpoint (keeps Render/Railway alive)
-    @fastapi_app.get("/")
-    @fastapi_app.get("/health")
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        # startup
+        await ptb_app.initialize()
+        webhook_endpoint = f"{WEBHOOK_URL}/webhook/{BOT_TOKEN}"
+        await ptb_app.bot.set_webhook(webhook_endpoint)
+        logger.info("Webhook registered: %s", webhook_endpoint)
+        yield
+        # shutdown
+        await ptb_app.bot.delete_webhook()
+        await ptb_app.shutdown()
+        logger.info("Webhook removed.")
+
+    fastapi_app = FastAPI(lifespan=lifespan)
+
+    # Health-check — handles GET, HEAD, and OPTIONS so Render stays happy
+    @fastapi_app.api_route("/", methods=["GET", "HEAD"])
+    @fastapi_app.api_route("/health", methods=["GET", "HEAD"])
     async def health():
         return {"status": "ok"}
 
@@ -311,20 +327,6 @@ def run_webhook():
         update = Update.de_json(data, ptb_app.bot)
         await ptb_app.process_update(update)
         return Response(status_code=200)
-
-    # Register webhook with Telegram on startup
-    @fastapi_app.on_event("startup")
-    async def on_startup():
-        await ptb_app.initialize()
-        webhook_endpoint = f"{WEBHOOK_URL}/webhook/{BOT_TOKEN}"
-        await ptb_app.bot.set_webhook(webhook_endpoint)
-        logger.info("Webhook registered: %s", webhook_endpoint)
-
-    @fastapi_app.on_event("shutdown")
-    async def on_shutdown():
-        await ptb_app.bot.delete_webhook()
-        await ptb_app.shutdown()
-        logger.info("Webhook removed.")
 
     uvicorn.run(fastapi_app, host="0.0.0.0", port=PORT)
 
